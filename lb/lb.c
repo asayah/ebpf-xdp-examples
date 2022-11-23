@@ -1,58 +1,56 @@
-/* SPDX-License-Identifier: (LGPL-2.1 OR BSD-2-Clause) */
-/* Copyright (c) 2021 Hengqi Chen */
-/* Adapted for `bee` from: https://github.com/iovisor/bcc/blob/master/libbpf-tools/exitsnoop.bpf.c */
-#include <vmlinux.h>
-#include <bpf/bpf_helpers.h>
-#include <bpf/bpf_core_read.h>
 #include "lb.h"
 
-//const volatile pid_t target_pid = 0;
-//const volatile bool trace_by_process = true;
-const volatile bool trace_failed_only = false;
+#define IP_ADDRESS(x) (unsigned int)(172 + (17 << 8) + (0 << 16) + (x << 24))
 
-struct {
-        __uint(type, BPF_MAP_TYPE_RINGBUF);
-        __uint(max_entries, 1 << 24);
-        __type(value, struct event);
-} exits SEC(".maps.print");
+#define BACKEND_A 2
+#define BACKEND_B 3
+#define CLIENT 4
+#define LB 5
 
-SEC("tracepoint/sched/sched_process_exit")
-int sched_process_exit(void *ctx)
+SEC("xdp_lb")
+int xdp_load_balancer(struct xdp_md *ctx)
 {
-        __u64 pid_tgid = bpf_get_current_pid_tgid();
-        __u32 pid = pid_tgid >> 32;
-        __u32 tid = (__u32)pid_tgid;
-        int exit_code;
-        struct task_struct *task;
-        struct event event = {};
+    void *data = (void *)(long)ctx->data;
+    void *data_end = (void *)(long)ctx->data_end;
 
-        task = (struct task_struct *)bpf_get_current_task();
-        exit_code = BPF_CORE_READ(task, exit_code);
-        if (trace_failed_only && exit_code == 0)
-                return 0;
+    bpf_printk("got something");
 
-        event.start_time = BPF_CORE_READ(task, start_time);
-        event.exit_time = bpf_ktime_get_ns();
-        event.pid = pid;
-        event.tid = tid;
-        event.ppid = BPF_CORE_READ(task, real_parent, tgid);
-        event.sig = exit_code & 0xff;
-        event.exit_code = exit_code >> 8;
-        bpf_get_current_comm(event.comm, sizeof(event.comm));
+    struct ethhdr *eth = data;
+    if (data + sizeof(struct ethhdr) > data_end)
+        return XDP_ABORTED;
 
-        struct event *ring_val;
+    if (bpf_ntohs(eth->h_proto) != ETH_P_IP)
+        return XDP_PASS;
 
-        ring_val = bpf_ringbuf_reserve(&exits, sizeof(struct event), 0);
-        if (!ring_val) {
-                return 0;
-        }
+    struct iphdr *iph = data + sizeof(struct ethhdr);
+    if (data + sizeof(struct ethhdr) + sizeof(struct iphdr) > data_end)
+        return XDP_ABORTED;
 
-        memcpy(ring_val, &event, sizeof(struct event));
+    if (iph->protocol != IPPROTO_TCP)
+        return XDP_PASS;
 
-        /* submit event to ringbuf for printing */
-        bpf_ringbuf_submit(ring_val, 0);
+    bpf_printk("Got TCP packet from %x", iph->saddr);
 
-        return 0;
+    if (iph->saddr == IP_ADDRESS(CLIENT))
+    {
+        char be = BACKEND_A;
+        if (bpf_ktime_get_ns() % 2)
+            be = BACKEND_B;
+
+        iph->daddr = IP_ADDRESS(be);
+        eth->h_dest[5] = be;
+    }
+    else
+    {
+        iph->daddr = IP_ADDRESS(CLIENT);
+        eth->h_dest[5] = CLIENT;
+    }
+    iph->saddr = IP_ADDRESS(LB);
+    eth->h_source[5] = LB;
+
+    iph->check = iph_csum(iph);
+
+    return XDP_TX;
 }
 
-char LICENSE[] SEC("license") = "Dual BSD/GPL";
+char _license[] SEC("license") = "GPL";
