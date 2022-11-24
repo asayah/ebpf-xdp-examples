@@ -2,7 +2,7 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_core_read.h>
 #include <bpf/bpf_tracing.h>
-
+#include <bpf/bpf_endian.h>
 
 #define IP_ADDRESS(x) (unsigned int)(172 + (17 << 8) + (0 << 16) + (x << 24))
 
@@ -33,24 +33,6 @@ iph_csum(struct iphdr *iph)
     unsigned long long csum = bpf_csum_diff(0, 0, (unsigned int *)iph, sizeof(struct iphdr), 0);
     return csum_fold_helper(csum);
 }
-
-
-#define TASK_COMM_LEN 16
-
-struct data_t {
-        __u32 fpid;
-        __u32 tpid;
-        __u64 pages;
-        char fcomm[TASK_COMM_LEN];
-        char tcomm[TASK_COMM_LEN];
-};
-
-struct {
-        __uint(type, BPF_MAP_TYPE_RINGBUF);
-        __uint(max_entries, 1 << 24);
-        __type(value, struct data_t);
-} oomkills SEC(".maps.print");
-
 
 
 SEC("xdp_lb")
