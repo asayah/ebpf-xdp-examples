@@ -10,6 +10,7 @@
 #define BACKEND_B 3
 #define CLIENT 4
 #define LB 5
+#define ETH_P_IP 0x0800
 
 
 static __always_inline __u16
